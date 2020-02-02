@@ -16,17 +16,13 @@
 /// }
 /// ```
 public struct Heatmap<SeriesType> where SeriesType: Heatmappable {
-    public typealias Element = SeriesType.Iterator.Element
-
   public var layout = GraphLayout()
   
-  public var values: SeriesType
-  public var mapping: Mapping.Heatmap<Element>
+  public var heatmappable: SeriesType
   public var colorMap: ColorMap = .fiveColorHeatMap
     
-    public init(_ mappeable: SeriesType, mapping: Mapping.Heatmap<Element>, style: (inout Self)->Void = { _ in }) {
-      self.values = mappeable
-      self.mapping = mapping
+    public init(_ heatmappable: SeriesType, style: (inout Self)->Void = { _ in }) {
+      self.heatmappable = heatmappable
       self.layout.drawsGridOverForeground = true
       self.layout.markerLabelAlignment = .betweenMarkers
       self.showGrid = false
@@ -50,7 +46,6 @@ extension Heatmap: HasGraphLayout, Plot {
   
   public struct DrawingData: AdjustsPlotSize {
     var values: SeriesType?
-    var range: (min: Element, max: Element)?
     var itemSize = Size.zero
     var rows = 0
     var columns = 0
@@ -62,36 +57,20 @@ extension Heatmap: HasGraphLayout, Plot {
     
     var results = DrawingData()
     var markers = PlotMarkers()
-    // Extract the first (inner) element as a starting point.
-    var oneOffIterator = values.makeIterator()
-    guard let (_, _, firstElem) = oneOffIterator.next() else {
-      return (results, nil)
-    }
-    var (maxValue, minValue) = (firstElem, firstElem)
-    
-    // - Discover the maximum/minimum values and shape of the data.
-    let totalRows = values.height
-    let maxColumns = values.width
-    var rowIterator = values.makeIterator()
-    while let (_, _, value) = rowIterator.next() {
-        maxValue = mapping.compare(maxValue, value) ? value : maxValue
-        minValue = mapping.compare(minValue, value) ? minValue : value
-    }
     
     // - Calculate the element size.
     var elementSize = Size(
-      width: size.width / Float(maxColumns),
-      height: size.height / Float(totalRows)
+        width: size.width / Float(heatmappable.width),
+        height: size.height / Float(heatmappable.height)
     )
     // We prefer showing smaller elements with integer dimensions to avoid aliasing.
     if elementSize.width > 1  { elementSize.width.round(.down)  }
     if elementSize.height > 1 { elementSize.height.round(.down) }
     
     // Update results.
-    results.values = values
-    results.range = (minValue, maxValue)
-    results.rows = totalRows
-    results.columns = maxColumns
+    results.values = heatmappable
+    results.rows = heatmappable.height
+    results.columns = heatmappable.width
     results.itemSize = elementSize
     // The size rounding may leave a gap between the data and the border,
     // so let the layout know we desire a smaller plot.
@@ -114,7 +93,7 @@ extension Heatmap: HasGraphLayout, Plot {
   }
   
   public func drawData(_ data: DrawingData, size: Size, renderer: Renderer) {
-    guard let values = data.values, let range = data.range else { return }
+    guard let values = data.values else { return }
     
     var valueIterator = values.makeIterator()
     while let (row, column, value) = valueIterator.next() {
@@ -123,9 +102,8 @@ extension Heatmap: HasGraphLayout, Plot {
                         Float(row) * data.itemSize.height),
           size: data.itemSize
         )
-        let offset = mapping.interpolate(value, range.min, range.max)
-                let color = colorMap.colorForOffset(offset)
-                renderer.drawSolidRect(rect, fillColor: color, hatchPattern: .none)
+        let color = colorMap.colorForOffset(value)
+        renderer.drawSolidRect(rect, fillColor: color, hatchPattern: .none)
         //        renderer.drawText(text: String(describing: element),
         //                          location: rect.origin + Point(50,50),
         //                          textSize: 20,
@@ -138,19 +116,19 @@ extension Heatmap: HasGraphLayout, Plot {
 
 // MARK: - Convenience API.
 
-extension Heatmap where HeatmapConstraints.IsFloat<Element>: Any {
-    
-    public init(_ values: SeriesType, style: (inout Self)->Void = { _ in }) {
-        self.init(values, mapping: .linear, style: style)
-    }
-}
-
-extension Heatmap where HeatmapConstraints.IsInteger<Element>: Any {
-    
-    public init(_ values: SeriesType, style: (inout Self)->Void = { _ in }) {
-        self.init(values, mapping: .linear, style: style)
-    }
-}
+//extension Heatmap where HeatmapConstraints.IsFloat<Element>: Any {
+//
+//    public init(_ values: SeriesType, style: (inout Self)->Void = { _ in }) {
+//        self.init(values, mapping: .linear, style: style)
+//    }
+//}
+//
+//extension Heatmap where HeatmapConstraints.IsInteger<Element>: Any {
+//
+//    public init(_ values: SeriesType, style: (inout Self)->Void = { _ in }) {
+//        self.init(values, mapping: .linear, style: style)
+//    }
+//}
 
 // SequencePlots.
 // 2D Datasets.
@@ -334,70 +312,14 @@ extension SequencePlots where Base.Element: Sequence, HeatmapConstraints.IsInteg
 //}
 
 
-// MARK: - Alternative approach
 
-// MARK: Basic Protocols
 
-public protocol Heatmappable {
-    associatedtype Iterator: HeatmappableIterator
-    
-    var width: Int { get }
-    var height: Int { get }
-    
-    func makeIterator() -> Iterator
-}
 
-public protocol HeatmappableIterator {
-    associatedtype Element
-    
-    mutating func next() -> (row: Int, column: Int, element: Element)?
-}
+// MARK: - Different take on it!
+
 
 
 // MARK: 1D Datasets.
-
-public struct Heatmappable1D<Base: Collection>: Heatmappable {
-    private let base: Base
-    public let width: Int
-    public let height: Int
-    
-    init(base: Base, width: Int) {
-        self.base = base
-        self.width = width
-        var elementsLeft = base.count
-        let height = elementsLeft/width
-        elementsLeft -= height*width
-        self.height = height + elementsLeft != 0 ? 1 : 0
-    }
-    
-    public struct Iterator: HeatmappableIterator {
-        var base: Base.Iterator
-        let width: Int
-        var row: Int = 0
-        var column: Int = 0
-        
-        init(base: Base, width: Int) {
-            self.base = base.makeIterator()
-            self.width = width
-        }
-        
-        mutating public func next() -> (row: Int, column: Int, element: Base.Element)? {
-            guard let nextElement = base.next() else { return nil }
-            
-            let result = (row: row, column: column, element: nextElement)
-            column += 1
-            if column == width {
-                column = 0
-                row += 1
-            }
-            return result
-        }
-    }
-    
-    public func makeIterator() -> Iterator {
-        return Iterator(base: base, width: width)
-    }
-}
 
 extension SequencePlots where Base: Collection {
     
@@ -405,7 +327,7 @@ extension SequencePlots where Base: Collection {
     ///
     /// - parameters:
     ///   - width:        The width of the heatmap to generate. Must be greater than 0.
-    ///   - mapping:    A function or `KeyPath` which maps values to a continuum between 0 and 1.
+    ///   - mapping:      A function or `KeyPath` which maps values to a continuum between 0 and 1.
     /// - returns:        A heatmap plot of the collection's values.
     /// - complexity:     O(n). Consider though, that rendering a heatmap or copying to a `RamdomAccessCollection`
     ///                   is also at least O(n), and this does not copy the data.
@@ -417,69 +339,11 @@ extension SequencePlots where Base: Collection {
     ) -> Heatmap<Heatmappable1D<Base>> {
         
         precondition(width > 0, "Cannot build a heatmap with zero or negative width")
-        return Heatmap(Heatmappable1D(base: base, width: width), mapping: mapping, style: style)
+        return Heatmap(Heatmappable1D(base: base, width: width, mapping: mapping), style: style)
     }
 }
 
 // MARK: 2D Datasets.
-
-public struct Heatmappable2D<Base: Sequence>: Heatmappable where Base.Element: Sequence{
-    private let base: Base
-    public let width: Int
-    public let height: Int
-    
-    init(base: Base) {
-        self.base = base
-        
-        // Get shape of 2D data
-        var height = 0
-        var width = 0
-        var currentWidth = 0
-        for row in base {
-            for _ in row {
-                currentWidth += 1
-            }
-            width = max(width, currentWidth)
-            currentWidth = 0
-            height += 1
-        }
-        self.height = height
-        self.width = width
-    }
-    
-    public struct Iterator: HeatmappableIterator {
-        var rowIterator: Base.Iterator
-        var columnIterator: EnumeratedSequence<Base.Element>.Iterator
-        var currentRow: Int
-        
-        init(base: Base) {
-            rowIterator = base.makeIterator()
-            guard let firstRow = rowIterator.next() else {
-                fatalError("Heatmappable2D.Iterator: base is empty!")
-            }
-            columnIterator = firstRow.enumerated().makeIterator()
-            currentRow = 0
-        }
-        
-        mutating public func next() -> (row: Int, column: Int, element: Base.Element.Element)? {
-            
-            var optPair = columnIterator.next()
-            while optPair == nil {
-                guard let nextRow = rowIterator.next() else { return nil }
-                columnIterator = nextRow.enumerated().makeIterator()
-                currentRow += 1
-                optPair = columnIterator.next()
-            }
-            let pair = optPair!
-            
-            return (currentRow, pair.offset, pair.element)
-        }
-    }
-    
-    public func makeIterator() -> Iterator {
-        return Iterator(base: base)
-    }
-}
 
 extension SequencePlots where Base.Element: Sequence {
     
@@ -494,6 +358,6 @@ extension SequencePlots where Base.Element: Sequence {
         mapping: Mapping.Heatmap<Base.Element.Element>,
         style: (inout Heatmap<Heatmappable2D<Base>>) -> Void = { _ in }
     ) -> Heatmap<Heatmappable2D<Base>> {
-        return Heatmap(Heatmappable2D(base: base), mapping: mapping, style: style)
+        return Heatmap(Heatmappable2D(base: base, mapping: mapping), style: style)
     }
 }
